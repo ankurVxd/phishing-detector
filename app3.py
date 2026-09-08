@@ -291,10 +291,11 @@ def render_detail_view(record):
     st.progress(int(result['final_score']) / 100)
     st.markdown(f"<div style='font-size:13px; color:#4C5A78;'>Overall Risk Score: <b>{result['final_score']} / 100</b></div>", unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.markdown(f'<div class="stat-card"><div class="stat-label">Text Analysis</div><div class="stat-value stat-blue">{result["ml_score"]}</div></div>', unsafe_allow_html=True)
     c2.markdown(f'<div class="stat-card"><div class="stat-label">URL Risk</div><div class="stat-value stat-amber">{result["url_score"]}</div></div>', unsafe_allow_html=True)
     c3.markdown(f'<div class="stat-card"><div class="stat-label">Sender Risk</div><div class="stat-value stat-red">{result["sender_score"]}</div></div>', unsafe_allow_html=True)
+    c4.markdown(f'<div class="stat-card"><div class="stat-label">Scam Pattern</div><div class="stat-value stat-green">{result.get("fraud_pattern_score", 0)}</div></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-title" style="margin-top:20px;">Why This Result</div>', unsafe_allow_html=True)
     for r in result['reasons']:
@@ -317,12 +318,17 @@ def render_detail_view(record):
         st.rerun()
 
 
-def render_results_table(records, key_prefix):
+def render_results_table(records, key_prefix, newest_first=True):
     if not records:
         st.info("No emails analyzed yet.")
         return
 
-    for r in reversed(records):
+    # `records` from st.session_state.history grows oldest -> newest as you analyze,
+    # so reverse it to show newest first. Gmail results already arrive newest-first
+    # from the Gmail API, so they should NOT be reversed again.
+    display_records = list(reversed(records)) if newest_first else records
+
+    for r in display_records:
         badge = verdict_to_badge(r["result"]["verdict"])
         col1, col2, col3, col4, col5, col6 = st.columns([2.5, 1.5, 1.3, 1.3, 1, 1])
         with col1:
@@ -396,7 +402,7 @@ if st.session_state.nav == "Dashboard" and st.session_state.selected_record_id i
     render_results_table(recent, key_prefix="dash")
 
     if len(st.session_state.history) > 5:
-        if st.button("View All → Analysis History"):
+        if st.button("View All \u2192 Analysis History"):
             st.session_state.nav = "Analysis History"
             st.rerun()
 
@@ -448,7 +454,7 @@ elif st.session_state.nav == "Gmail Inbox" and st.session_state.selected_record_
 
     num_emails = st.slider("Number of recent emails to scan", min_value=5, max_value=30, value=10)
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("Connect with Gmail"):
             try:
@@ -470,6 +476,14 @@ elif st.session_state.nav == "Gmail Inbox" and st.session_state.selected_record_
                         result = compute_risk(email["subject"], email["body"], email["sender_email"])
                         log_record(email["subject"], email["sender_display"], email["body"], result, source="Gmail")
                 st.success(f"Scanned {len(emails)} emails.")
+    with c3:
+        gmail_count = len([r for r in st.session_state.history if r["source"] == "Gmail"])
+        if gmail_count > 0:
+            if st.button("Clear Scan History"):
+                st.session_state.history = [r for r in st.session_state.history if r["source"] != "Gmail"]
+                st.session_state.selected_record_id = None
+                st.success("Gmail scan history cleared.")
+                st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -483,7 +497,7 @@ elif st.session_state.nav == "Gmail Inbox" and st.session_state.selected_record_
         s2.markdown(f'<div class="stat-card"><div class="stat-label">Phishing Detected</div><div class="stat-value stat-red">{phishing}</div></div>', unsafe_allow_html=True)
 
         st.markdown('<div class="section-title" style="margin-top:22px;">Inbox Scan Results</div>', unsafe_allow_html=True)
-        render_results_table(gmail_records, key_prefix="gmail")
+        render_results_table(gmail_records, key_prefix="gmail", newest_first=False)
 
 # ===========================================================
 # PAGE: ANALYSIS HISTORY
@@ -501,8 +515,8 @@ elif st.session_state.nav == "About" and st.session_state.selected_record_id is 
     st.markdown("""
     <div class="glass-card">
         PhishGuard combines a machine learning text classifier (TF-IDF + Logistic Regression / 
-        Naive Bayes), URL heuristic analysis, and sender domain verification into a single, 
-        transparent phishing risk score.<br><br>
+        Naive Bayes), URL heuristic analysis, sender domain verification, and rule-based scam 
+        pattern detection into a single, transparent phishing risk score.<br><br>
         <b>Risk Levels</b><br>
         <span class="badge badge-safe">Safe</span> — Score below 35<br><br>
         <span class="badge badge-suspicious">Suspicious</span> — Score between 35 and 70<br><br>
