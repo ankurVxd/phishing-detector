@@ -42,6 +42,14 @@ def authenticate_gmail():
     return service
 
 
+def get_gmail_profile(service):
+    """
+    Returns the email address of the currently authenticated Gmail account.
+    """
+    profile = service.users().getProfile(userId='me').execute()
+    return profile.get('emailAddress', 'Unknown')
+
+
 def extract_body(payload):
     """
     Recursively extracts plain-text body from Gmail's nested payload structure.
@@ -52,13 +60,11 @@ def extract_body(payload):
             if part.get('mimeType') == 'text/plain' and 'data' in part.get('body', {}):
                 data = part['body']['data']
                 return base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
-        # Recurse into nested multipart sections (e.g., multipart/alternative inside multipart/mixed)
         for part in payload['parts']:
             if 'parts' in part:
                 result = extract_body(part)
                 if result:
                     return result
-        # Fallback: try HTML part and strip tags roughly
         for part in payload['parts']:
             if part.get('mimeType') == 'text/html' and 'data' in part.get('body', {}):
                 data = part['body']['data']
@@ -77,8 +83,9 @@ def get_header(headers, name):
 
 def fetch_recent_emails(service, max_results=10):
     """
-    Fetches the most recent emails from the user's inbox and returns a list of
-    dicts with subject, sender, date, and body text for each.
+    Fetches the most recent emails from the user's inbox (newest first, as
+    returned by Gmail's API) and returns a list of dicts with subject,
+    sender, date, and body text for each.
     """
     results = service.users().messages().list(
         userId='me', maxResults=max_results, labelIds=['INBOX']
@@ -100,7 +107,6 @@ def fetch_recent_emails(service, max_results=10):
         body = extract_body(msg_data['payload'])
         snippet = msg_data.get('snippet', '')
 
-        # Clean sender to extract just the email address from "Name <email@domain.com>"
         sender_email_match = re.search(r'[\w\.-]+@[\w\.-]+', sender)
         sender_email = sender_email_match.group(0) if sender_email_match else sender
 

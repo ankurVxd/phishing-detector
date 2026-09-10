@@ -1,7 +1,7 @@
 import streamlit as st
 from datetime import datetime
 from src.risk_engine import compute_risk
-from src.gmail_integration import authenticate_gmail, fetch_recent_emails
+from src.gmail_integration import authenticate_gmail, fetch_recent_emails, get_gmail_profile
 
 st.set_page_config(page_title="PhishGuard | AI Email Security", layout="wide", initial_sidebar_state="expanded")
 
@@ -9,7 +9,7 @@ st.set_page_config(page_title="PhishGuard | AI Email Security", layout="wide", i
 # SESSION STATE INITIALIZATION
 # ===========================================================
 if "history" not in st.session_state:
-    st.session_state.history = []          # list of analyzed email records
+    st.session_state.history = []
 if "gmail_connected" not in st.session_state:
     st.session_state.gmail_connected = False
 if "gmail_emails" not in st.session_state:
@@ -18,6 +18,8 @@ if "selected_record_id" not in st.session_state:
     st.session_state.selected_record_id = None
 if "nav" not in st.session_state:
     st.session_state.nav = "Dashboard"
+if "connected_email" not in st.session_state:
+    st.session_state.connected_email = None
 
 # ===========================================================
 # STYLING — Beige/cream background, navy text, glass cards
@@ -35,7 +37,6 @@ html, body, [class*="css"] {
     color: #10203D;
 }
 
-/* Sidebar */
 section[data-testid="stSidebar"] {
     background: #FBF7EE;
     border-right: 1px solid #E3D9C4;
@@ -68,7 +69,6 @@ section[data-testid="stSidebar"] * {
     line-height: 1.5;
 }
 
-/* Nav radio styled as sidebar list */
 div[role="radiogroup"] > label {
     background: transparent;
     border-radius: 10px;
@@ -85,7 +85,6 @@ div[role="radiogroup"] input:checked + div {
     color: white !important;
 }
 
-/* Glass card base */
 .glass-card {
     background: rgba(255,255,255,0.72);
     backdrop-filter: blur(6px);
@@ -96,7 +95,6 @@ div[role="radiogroup"] input:checked + div {
     margin-bottom: 20px;
 }
 
-/* Welcome banner */
 .banner {
     background: rgba(255,255,255,0.65);
     border-radius: 20px;
@@ -120,7 +118,6 @@ div[role="radiogroup"] input:checked + div {
     line-height: 1.6;
 }
 
-/* Stat cards */
 .stat-card {
     border-radius: 16px;
     padding: 20px;
@@ -146,7 +143,6 @@ div[role="radiogroup"] input:checked + div {
 .stat-red    { color: #D64545; text-shadow: 0 0 14px rgba(214,69,69,0.25); }
 .stat-amber  { color: #C7861A; text-shadow: 0 0 14px rgba(199,134,26,0.25); }
 
-/* Section heading */
 .section-title {
     font-family: 'Poppins', sans-serif;
     font-size: 20px;
@@ -160,7 +156,6 @@ div[role="radiogroup"] input:checked + div {
     margin-bottom: 18px;
 }
 
-/* Inputs */
 .stTextInput input, .stTextArea textarea {
     background-color: #FFFFFF !important;
     color: #10203D !important;
@@ -173,7 +168,6 @@ div[role="radiogroup"] input:checked + div {
 }
 label { color: #14213D !important; font-weight: 600 !important; font-size: 13px !important; }
 
-/* Buttons */
 .stButton button {
     background: linear-gradient(135deg, #2F6FED, #1B4FD1);
     color: white;
@@ -188,7 +182,6 @@ label { color: #14213D !important; font-weight: 600 !important; font-size: 13px 
     color: white;
 }
 
-/* Badges */
 .badge {
     display: inline-block;
     padding: 4px 12px;
@@ -201,7 +194,6 @@ label { color: #14213D !important; font-weight: 600 !important; font-size: 13px 
 .badge-suspicious { background: #FBF0DC; color: #C7861A; border: 1px solid #F0DBA5; }
 .badge-phishing { background: #FBE4E4; color: #D64545; border: 1px solid #F3BDBD; }
 
-/* Table row card */
 .table-row {
     background: rgba(255,255,255,0.75);
     border: 1px solid rgba(200,190,165,0.5);
@@ -210,7 +202,6 @@ label { color: #14213D !important; font-weight: 600 !important; font-size: 13px 
     margin-bottom: 8px;
 }
 
-/* Risk bar */
 .stProgress > div > div { background-color: #2F6FED !important; }
 
 hr { border-top: 1px solid #E3D9C4; }
@@ -247,7 +238,7 @@ def render_stats():
     total = len(st.session_state.history)
     phishing_count = sum(1 for r in st.session_state.history if "Phishing" in r["result"]["verdict"])
     safe_count = sum(1 for r in st.session_state.history if "Safe" in r["result"]["verdict"])
-    last_time = st.session_state.history[-1]["timestamp"] if total > 0 else "—"
+    last_time = st.session_state.history[-1]["timestamp"] if total > 0 else "\u2014"
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -323,9 +314,10 @@ def render_results_table(records, key_prefix, newest_first=True):
         st.info("No emails analyzed yet.")
         return
 
-    # `records` from st.session_state.history grows oldest -> newest as you analyze,
-    # so reverse it to show newest first. Gmail results already arrive newest-first
-    # from the Gmail API, so they should NOT be reversed again.
+    # st.session_state.history grows oldest -> newest as analyses happen,
+    # so it needs reversing to show newest first (Dashboard/History views).
+    # Gmail records already arrive newest-received-first from the API,
+    # so they should NOT be reversed again.
     display_records = list(reversed(records)) if newest_first else records
 
     for r in display_records:
@@ -450,18 +442,24 @@ elif st.session_state.nav == "Gmail Inbox" and st.session_state.selected_record_
         status_text = "Connected" if st.session_state.gmail_connected else "Not Connected"
         status_color = "#1E8A5F" if st.session_state.gmail_connected else "#D64545"
         st.markdown(f"<b>Connection Status:</b> <span style='color:{status_color}; font-weight:700;'>{status_text}</span>", unsafe_allow_html=True)
+
+        if st.session_state.gmail_connected and st.session_state.connected_email:
+            st.markdown(f"<div style='font-size:14px; color:#14213D; margin-top:4px;'><b>Account:</b> {st.session_state.connected_email}</div>", unsafe_allow_html=True)
+
         st.markdown("<div style='font-size:13px; color:#5A6B8C; margin-top:6px;'>Only read-only access is requested — PhishGuard cannot send, delete, or modify your emails.</div>", unsafe_allow_html=True)
 
     num_emails = st.slider("Number of recent emails to scan", min_value=5, max_value=30, value=10)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("Connect with Gmail"):
             try:
                 with st.spinner("Connecting to Gmail..."):
-                    authenticate_gmail()
+                    service = authenticate_gmail()
+                    connected_email = get_gmail_profile(service)
                 st.session_state.gmail_connected = True
-                st.success("Gmail connected successfully.")
+                st.session_state.connected_email = connected_email
+                st.success(f"Connected to {connected_email}")
             except FileNotFoundError as e:
                 st.error(str(e))
             except Exception as e:
@@ -483,6 +481,13 @@ elif st.session_state.nav == "Gmail Inbox" and st.session_state.selected_record_
                 st.session_state.history = [r for r in st.session_state.history if r["source"] != "Gmail"]
                 st.session_state.selected_record_id = None
                 st.success("Gmail scan history cleared.")
+                st.rerun()
+    with c4:
+        if st.session_state.gmail_connected:
+            if st.button("Disconnect"):
+                st.session_state.gmail_connected = False
+                st.session_state.connected_email = None
+                st.success("Disconnected from Gmail.")
                 st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
